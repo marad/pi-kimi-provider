@@ -1,0 +1,23 @@
+{
+  "name": "pi-kimi-provider",
+  "version": "1.0.0",
+  "description": "Kimi Membership Provider Extension for Pi. Access Kimi models via OAuth device flow or API key.",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "author": "Marcin Radoszewski",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marad/pi-kimi-provider.git"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.1.0",
+    "@mariozechner/pi-coding-agent": "^0.1.0"
+  }
+}
