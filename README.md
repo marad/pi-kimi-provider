@@ -8,6 +8,7 @@ Kimi Membership Provider Extension for [Pi](https://pi.dev). Access Kimi models 
 - **API key support** — alternatively set `KIMI_API_KEY` environment variable
 - **Model access** — use `kimi-for-coding` (Kimi-k2.6) with reasoning and image support
 - **Token refresh** — automatic token refresh when access token expires
+- **Usage tracking** — check subscription quota with `/kimi-usage`
 
 ## Installation
 
@@ -42,7 +43,13 @@ Then reload Pi with `/reload`.
    ```
    Follow the link to authorize Pi in your browser.
 
-3. **Start chatting.**
+3. **Check usage:**
+   ```
+   /kimi-usage
+   ```
+   Shows your current subscription usage in the 5-hour window and weekly quota.
+
+4. **Start chatting.**
 
 ## Environment Variables
 

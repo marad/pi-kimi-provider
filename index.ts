@@ -263,10 +263,242 @@ async function refreshKimiToken(credentials: OAuthCredentials): Promise<OAuthCre
 }
 
 // =============================================================================
+// Usage Info (reverse-engineered from kimi-cli)
+// =============================================================================
+
+interface KimiUsageResponse {
+	usage?: Record<string, unknown>;
+	limits?: Array<{
+		detail?: Record<string, unknown>;
+		window?: Record<string, unknown>;
+		[key: string]: unknown;
+	}>;
+	[key: string]: unknown;
+}
+
+interface UsageRow {
+	label: string;
+	used: number;
+	limit: number;
+	resetHint: string | null;
+}
+
+function toInt(value: unknown): number | null {
+	if (value === null || value === undefined) return null;
+	const n = Number(value);
+	return Number.isFinite(n) ? n : null;
+}
+
+function resetHint(data: Record<string, unknown>): string | null {
+	for (const key of ["reset_at", "resetAt", "reset_time", "resetTime"]) {
+		const val = data[key];
+		if (val) return formatResetTime(String(val));
+	}
+	for (const key of ["reset_in", "resetIn", "ttl", "window"]) {
+		const seconds = toInt(data[key]);
+		if (seconds) return `resets in ${formatDuration(seconds)}`;
+	}
+	return null;
+}
+
+function formatDuration(seconds: number): string {
+	const hrs = Math.floor(seconds / 3600);
+	const mins = Math.floor((seconds % 3600) / 60);
+	const secs = seconds % 60;
+	if (hrs > 0) return `${hrs}h ${mins}m`;
+	if (mins > 0) return `${mins}m ${secs}s`;
+	return `${secs}s`;
+}
+
+function formatResetTime(val: string): string {
+	try {
+		// Truncate nanoseconds to microseconds for JS Date compatibility
+		let iso = val;
+		if (iso.includes(".") && iso.endsWith("Z")) {
+			const base = iso.slice(0, -1);
+			const dotIdx = base.lastIndexOf(".");
+			if (dotIdx > 0) {
+				iso = base.slice(0, dotIdx + 1) + base.slice(dotIdx + 1, dotIdx + 7) + "Z";
+			}
+		}
+		const dt = new Date(iso);
+		if (Number.isNaN(dt.getTime())) return `resets at ${val}`;
+		const now = Date.now();
+		const delta = Math.floor((dt.getTime() - now) / 1000);
+		if (delta <= 0) return "reset";
+		return `resets in ${formatDuration(delta)}`;
+	} catch {
+		return `resets at ${val}`;
+	}
+}
+
+function limitLabel(
+	item: Record<string, unknown>,
+	detail: Record<string, unknown>,
+	window: Record<string, unknown>,
+	idx: number,
+): string {
+	for (const key of ["name", "title", "scope"]) {
+		const val = item[key] ?? detail[key];
+		if (val) return String(val);
+	}
+	const duration =
+		toInt(window.duration) ?? toInt(item.duration) ?? toInt(detail.duration);
+	const timeUnit = String(
+		window.timeUnit ?? item.timeUnit ?? detail.timeUnit ?? "",
+	);
+	if (duration) {
+		if (timeUnit.includes("MINUTE")) {
+			if (duration >= 60 && duration % 60 === 0) return `${duration / 60}h limit`;
+			return `${duration}m limit`;
+		}
+		if (timeUnit.includes("HOUR")) return `${duration}h limit`;
+		if (timeUnit.includes("DAY")) return `${duration}d limit`;
+		return `${duration}s limit`;
+	}
+	return `Limit #${idx + 1}`;
+}
+
+function toUsageRow(data: Record<string, unknown>, defaultLabel: string): UsageRow | null {
+	const limit = toInt(data.limit);
+	let used = toInt(data.used);
+	if (used === null) {
+		const remaining = toInt(data.remaining);
+		if (remaining !== null && limit !== null) {
+			used = limit - remaining;
+		}
+	}
+	if (used === null && limit === null) return null;
+	return {
+		label: String(data.name ?? data.title ?? defaultLabel),
+		used: used ?? 0,
+		limit: limit ?? 0,
+		resetHint: resetHint(data),
+	};
+}
+
+function parseUsagePayload(payload: KimiUsageResponse): UsageRow[] {
+	const rows: UsageRow[] = [];
+
+	const usage = payload.usage;
+	if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+		const row = toUsageRow(usage, "Weekly limit");
+		if (row) rows.push(row);
+	}
+
+	const limits = payload.limits;
+	if (Array.isArray(limits)) {
+		for (let idx = 0; idx < limits.length; idx++) {
+			const item = limits[idx];
+			if (!item || typeof item !== "object") continue;
+			const detailRaw = item.detail;
+			const detail =
+				detailRaw && typeof detailRaw === "object" && !Array.isArray(detailRaw)
+					? (detailRaw as Record<string, unknown>)
+					: item;
+			const windowRaw = item.window;
+			const window =
+				windowRaw && typeof windowRaw === "object" && !Array.isArray(windowRaw)
+					? (windowRaw as Record<string, unknown>)
+					: {};
+			const label = limitLabel(item, detail, window, idx);
+			const row = toUsageRow(detail, label);
+			if (row) rows.push(row);
+		}
+	}
+
+	return rows;
+}
+
+function renderBar(used: number, limit: number, width = 20): string {
+	if (limit <= 0) return "";
+	const ratio = (limit - used) / limit;
+	const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
+	const empty = width - filled;
+	return "[" + "█".repeat(filled) + "░".repeat(empty) + "]";
+}
+
+function usageLabel(usedRatio: number): string {
+	if (usedRatio >= 0.9) return "CRIT";
+	if (usedRatio >= 0.7) return "WARN";
+	return "GOOD";
+}
+
+function formatUsageRows(rows: UsageRow[]): string {
+	const labelWidth = Math.max(6, ...rows.map((r) => r.label.length));
+	const lines: string[] = [];
+
+	for (const row of rows) {
+		const usedRatio = row.limit > 0 ? row.used / row.limit : 0;
+		const pctLeft = Math.round((1 - usedRatio) * 100);
+		const bar = renderBar(row.used, row.limit);
+		const status = usageLabel(usedRatio);
+		const reset = row.resetHint ? ` (${row.resetHint})` : "";
+		lines.push(
+			`${row.label.padEnd(labelWidth)}  ${bar}  ${status}  ${pctLeft}% left${reset}`,
+		);
+	}
+
+	return lines.join("\n");
+}
+
+async function fetchKimiUsage(apiKey: string): Promise<KimiUsageResponse> {
+	const response = await fetch(`${KIMI_BASE_URL}/usages`, {
+		headers: {
+			Authorization: `Bearer ${apiKey}`,
+			...getCommonHeaders(),
+		},
+	});
+
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(`HTTP ${response.status}: ${text}`);
+	}
+
+	return (await response.json()) as KimiUsageResponse;
+}
+
+// =============================================================================
 // Extension Entry Point
 // =============================================================================
 
 export default function (pi: ExtensionAPI) {
+	pi.registerCommand("kimi-usage", {
+		description: "Show Kimi subscription usage (5h window and weekly)",
+		handler: async (_args, ctx) => {
+			const apiKey = await ctx.modelRegistry.authStorage.getApiKey("kimi");
+			if (!apiKey) {
+				ctx.ui.notify(
+					"No Kimi credentials found. Run /login kimi or set KIMI_API_KEY.",
+					"error",
+				);
+				return;
+			}
+
+			try {
+				const data = await fetchKimiUsage(apiKey);
+				const rows = parseUsagePayload(data);
+
+				let text = "**Kimi Usage**\n\n";
+				if (rows.length > 0) {
+					text += formatUsageRows(rows);
+				} else {
+					text += "No usage data available.\n\nRaw response:\n";
+					text += "```json\n" + JSON.stringify(data, null, 2) + "\n```";
+				}
+
+				pi.sendMessage({
+					customType: "kimi-usage",
+					content: text.trim(),
+					display: true,
+				});
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				ctx.ui.notify(`Failed to fetch Kimi usage: ${msg}`, "error");
+			}
+		},
+	});
+
 	pi.registerProvider("kimi", {
 		baseUrl: KIMI_BASE_URL,
 		apiKey: "KIMI_API_KEY",
